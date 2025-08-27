@@ -1,0 +1,12 @@
+version: "3.9"
+
+services:
+  invoice-app:
+    build: .
+    container_name: invoice-app
+    ports:
+      - "8668:8668"
+    volumes:
+      - ./files:/app/files   # persist CSV outputs
+      - ./.env:/app/.env:ro  # mount environment variables
+    restart: unless-stopped
