@@ -5,7 +5,7 @@ from google.genai import types
 from dotenv import load_dotenv
 
 from fastapi import FastAPI, Form, HTTPException, UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse,JSONResponse
 import uvicorn
 
 app = FastAPI()
@@ -14,31 +14,35 @@ app = FastAPI()
 load_dotenv()
 client = genai.Client()
 @app.post("/extract/")
-async def extract_product_tables_from_pdf(
+async def extract_product_tables(
     file_url: str = Form(...),
     prompt: str = Form(...),
     token: str = Form(...)
 ):
 
-    if resp.headers.get("Content-Type", "").startswith("text/html"):
-        test_url = f"{file_url.strip()}?user_token={token}"
-        resp = requests.get(test_url)
+    test_url = f"{file_url.strip()}?user_token={token}"
+    resp = requests.get(test_url)
 
     if resp.status_code != 200:
         raise HTTPException(status_code=resp.status_code, detail=f"Failed to fetch file: {resp.text[:200]}")
 
-    if "application/pdf" not in resp.headers.get("Content-Type", ""):
-        raise HTTPException(status_code=400, detail=f"File is not a PDF, got Content-Type={resp.headers.get('Content-Type')}")
+    content_type = resp.headers.get("Content-Type", "")
+    file_bytes = resp.content
 
-    # Get PDF bytes
-    pdf_bytes = resp.content
+    # Detect type
+    if "application/pdf" in content_type or file_url.lower().endswith(".pdf"):
+        mime_type = "application/pdf"
+    elif "text/csv" in content_type or file_url.lower().endswith(".csv"):
+        mime_type = "text/csv"
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {content_type}")
 
     # Call Gemini model
     response = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=[
-            types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"),
-            prompt  # your custom prompt
+            types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
+            prompt
         ]
     )
 
@@ -52,20 +56,20 @@ async def extract_product_tables_from_pdf(
     if not model_output:
         raise HTTPException(status_code=500, detail="Gemini returned empty response")
 
-    # Handle possible ```json ... ``` wrappers
+    # Clean markdown fencing
     cleaned_output = model_output.strip()
     if cleaned_output.startswith("```"):
         cleaned_output = "\n".join(
             line for line in cleaned_output.splitlines() if not line.strip().startswith("```")
         )
 
-    #  Parse JSON safely
+    # Parse JSON safely
     try:
         json_data = json.loads(cleaned_output)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Gemini did not return valid JSON: {str(e)}")
 
-    return {"data": json_data}
+    return JSONResponse(content={"data": json_data})
 
 @app.post("/FileUpload/")
 async def Fileupload_Convert_(
