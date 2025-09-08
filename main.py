@@ -1,11 +1,10 @@
-import os, requests, json
-from urllib.parse import urlparse
+import os, requests, json, asyncio, random
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 
 from fastapi import FastAPI, Form, HTTPException, UploadFile, File
-from fastapi.responses import FileResponse,JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 import uvicorn
 
 app = FastAPI()
@@ -13,13 +12,32 @@ app = FastAPI()
 # Load env once
 load_dotenv()
 client = genai.Client()
+async def call_gemini_with_retry(file_bytes, mime_type, prompt, max_retries=5):
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[
+                    types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
+                    prompt,
+                ],
+            )
+            return response
+        except Exception as e:
+            if "503" in str(e) or "UNAVAILABLE" in str(e):
+                wait = (2**attempt) + random.random()
+                print(f"Gemini overloaded, retrying in {wait:.1f}s (attempt {attempt+1}/{max_retries})")
+                await asyncio.sleep(wait)
+                continue
+            raise
+    raise HTTPException(status_code=503, detail="Gemini service overloaded after retries")
 @app.post("/extract/")
 async def extract_product_tables(
     file_url: str = Form(...),
     prompt: str = Form(...),
-    token: str = Form(...)
+    token: str = Form(...),
 ):
-
+    # fetch file
     test_url = f"{file_url.strip()}?user_token={token}"
     resp = requests.get(test_url)
 
@@ -29,7 +47,7 @@ async def extract_product_tables(
     content_type = resp.headers.get("Content-Type", "")
     file_bytes = resp.content
 
-    # Detect type
+    # detect type
     if "application/pdf" in content_type or file_url.lower().endswith(".pdf"):
         mime_type = "application/pdf"
     elif "text/csv" in content_type or file_url.lower().endswith(".csv"):
@@ -37,16 +55,10 @@ async def extract_product_tables(
     else:
         raise HTTPException(status_code=400, detail=f"Unsupported file type: {content_type}")
 
-    # Call Gemini model
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=[
-            types.Part.from_bytes(data=file_bytes, mime_type=mime_type),
-            prompt
-        ]
-    )
+    # Gemini call with retry
+    response = await call_gemini_with_retry(file_bytes, mime_type, prompt)
 
-    # Extract model text
+    # extract text safely
     model_output = None
     if response.candidates:
         parts = response.candidates[0].content.parts
@@ -56,14 +68,14 @@ async def extract_product_tables(
     if not model_output:
         raise HTTPException(status_code=500, detail="Gemini returned empty response")
 
-    # Clean markdown fencing
+    # clean markdown fences
     cleaned_output = model_output.strip()
     if cleaned_output.startswith("```"):
         cleaned_output = "\n".join(
             line for line in cleaned_output.splitlines() if not line.strip().startswith("```")
         )
 
-    # Parse JSON safely
+    # parse JSON
     try:
         json_data = json.loads(cleaned_output)
     except Exception as e:
