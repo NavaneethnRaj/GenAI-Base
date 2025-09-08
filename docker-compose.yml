@@ -10,3 +10,8 @@ services:
       - ./files:/app/files   # persist CSV outputs
       - ./.env:/app/.env:ro  # mount environment variables
     restart: unless-stopped
+    networks:
+      - vizru-network
+networks:
+  vizru-network:
+    external: true
